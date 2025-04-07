@@ -6,9 +6,7 @@
 
 見積もりシステムにおけるエンベディングの主な用途は以下の通りです：
 
-1.  過去の類似プロジェクトの検索
-2.  入力された要件に基づくシステムカテゴリの特定
-3.  関連質問の生成
+1.  RAG (Retrieval-Augmented Generation): 入力されたクエリや要件に基づいて、関連するドキュメント（過去のプロジェクトテンプレート、システムカテゴリ情報など）をベクトルデータベースから検索し、その情報を基に回答を生成する。
 
 Gemini APIの`text-embedding-004`モデルを使用して、テキストデータを768次元のベクトル形式に変換し、Supabase PostgreSQLのpgvector拡張を利用して類似性検索を行います。`ivfflat`インデックスを使用します。
 
@@ -17,14 +15,15 @@ Gemini APIの`text-embedding-004`モデルを使用して、テキストデー�
 - Node.js v20以上
 - Supabase (pgvector拡張が有効)
 - Gemini API キー
+- PostgreSQL 接続文字列 (`.env` に設定)
 
 ## 実装手順
 
 ### 1. 必要なパッケージのインストール
 
 ```bash
-# Supabase クライアントとその他の依存関係
-bun add @supabase/supabase-js @mastra/pg
+# Supabase クライアントと Mastra 関連パッケージ
+bun add @supabase/supabase-js @mastra/core @mastra/pg @ai-sdk/google zod
 ```
 
 ### 2. Supabase セットアップ
@@ -36,541 +35,203 @@ bun add @supabase/supabase-js @mastra/pg
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
-### 3. エンベディング生成用関数の実装
+### 3. エンベディング生成用関数の実装 (参考)
+
+**(注意)** 以下の `generateEmbedding` 関数は、現在のRAG実装 (`customPgVectorSearchTool` 内) では**直接使用されていません**。実際のエンベディング生成は、カスタムツール内で `@ai-sdk/google` ライブラリの `google.textEmbeddingModel().doEmbed()` メソッドを直接呼び出す形で行っています。このコード例は、Gemini APIを直接呼び出す場合の参考としてください。
 
 ```typescript
-// src/lib/embedding.ts
+// src/lib/embedding.ts (参考例 - 現在は直接使用されていない)
 import { createClient } from '@supabase/supabase-js';
 
-// Supabaseクライアントの初期化
-export const supabase = createClient(
-  process.env.SUPABASE_URL as string,
-  process.env.SUPABASE_ANON_KEY as string
-);
+// ... Supabaseクライアント初期化 ...
 
-/**
- * テキストからエンベディングを生成する関数 (text-embedding-004を使用)
- * @param text エンベディングを生成するテキスト
- * @returns 768次元のエンベディングベクトル
- */
 export async function generateEmbedding(text: string): Promise<number[]> {
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-  
-  if (!GEMINI_API_KEY) {
-    throw new Error('環境変数 GEMINI_API_KEY が設定されていません');
-  }
+  if (!GEMINI_API_KEY) { /* ... エラー処理 ... */ }
 
-  const modelName = 'models/text-embedding-004'; // 使用するモデル名を変更
-  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/${modelName}:embedContent?key=${GEMINI_API_KEY}`;
+  // ★★★ モデル名から "models/" を削除 ★★★
+  const modelName = 'text-embedding-004';
+  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:embedContent?key=${GEMINI_API_KEY}`;
 
   try {
-    const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: modelName,
-          content: {
-            parts: [{ text }]
-          },
-          // taskType は text-embedding-004 では不要/非推奨
-        })
-      }
-    );
-    
+    // ... fetch API 呼び出し ...
     const data = await response.json();
-    
-    if (!response.ok) {
-      console.error('Gemini API エラーレスポンス:', data);
-      throw new Error(`エンベディング生成APIエラー: ${response.status} ${response.statusText}`);
-    }
-
-    // text-embedding-004 のレスポンス形式に合わせて修正
-    if (!data.embedding || !data.embedding.values) { 
-      console.error('無効なエンベディングデータ:', data);
-      throw new Error('エンベディングの生成に失敗しました。APIレスポンスの形式が不正です。');
-    }
-    
-    // 768次元のベクトルが返されることを想定
-    if (data.embedding.values.length !== 768) {
-        console.warn(`期待した768次元と異なる次元数 (${data.embedding.values.length}) のベクトルが返されました。`);
-    }
-
+    if (!response.ok) { /* ... エラー処理 ... */ }
+    if (!data.embedding?.values) { /* ... エラー処理 ... */ }
     return data.embedding.values;
-  } catch (error) {
-    console.error('エンベディング生成中に予期せぬエラー:', error);
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`エンベディング生成に失敗: ${message}`);
+  } catch (error) { /* ... エラー処理 ... */ }
+}
+```
+
+実際のエンベディング生成は、`@ai-sdk/google` を利用して以下のように行われます。
+
+```typescript
+// カスタムツール内でのエンベディング生成例 (src/lib/rag/index.ts より)
+import { google } from "@ai-sdk/google";
+
+async function getEmbeddingForQuery(queryText: string): Promise<number[]> {
+  try {
+    const embedResult = await google.textEmbeddingModel("text-embedding-004")
+                                  .doEmbed({ values: [queryText] }); // 引数は配列で渡す
+    if (!embedResult?.embeddings?.[0]) { 
+      throw new Error("Embedding generation returned empty result.");
+    }
+    return embedResult.embeddings[0]; // 結果から配列を取り出す
+  } catch (embeddingError) {
+    console.error("Embedding generation failed:", embeddingError);
+    throw new Error("クエリのベクトル化に失敗しました。");
   }
 }
 ```
 
-### 4. プロジェクトテンプレートのエンベディング生成スクリプト
+### 4. & 5. データへのエンベディング生成・保存スクリプト
 
-プロジェクトテンプレートからエンベディングを生成し、データベースに保存するスクリプトを実装します。
+プロジェクトテンプレートやシステムカテゴリなどの既存データに対して、事前にエンベディングを生成し、データベースの `vector` 型カラム (例: `content_embedding`) に保存しておく必要があります。これは通常、バッチ処理スクリプトで行います。
 
 ```typescript
-// scripts/generate-embeddings.ts
+// scripts/generate-embeddings.ts (基本的な流れ)
+// (generateEmbedding は上記参考例か、@ai-sdk/google を使う実装に置き換え)
 import { supabase, generateEmbedding } from '../src/lib/embedding';
 
-async function generateProjectTemplateEmbeddings() {
-  // プロジェクトテンプレートの取得
-  const { data: templates, error } = await supabase
-    .from('project_templates')
-    .select('*');
-    
-  if (error) {
-    console.error('テンプレート取得エラー:', error);
-    return;
-  }
-  
-  console.log(`${templates.length}件のテンプレートのエンベディングを生成します`);
-  
-  for (const template of templates) {
-    // エンベディング用のテキストを生成
-    const textToEmbed = `
-      名前: ${template.name}
-      カテゴリ: ${template.category}
-      説明: ${template.description}
-      機能: ${JSON.stringify(template.features)}
-    `;
-    
+async function generateDataEmbeddings(tableName: string) {
+  const { data, error } = await supabase.from(tableName).select('*');
+  if (error) { /* ... エラー処理 ... */ return; }
+
+  for (const item of data) {
+    // 各アイテムからエンベディング対象のテキストを構築
+    const textToEmbed = `/* item の内容からテキストを生成 */`;
     try {
-      // エンベディングの生成
-      const embedding = await generateEmbedding(textToEmbed);
-      
-      // エンベディングをデータベースに保存
-      const { error: updateError } = await supabase
-        .from('project_templates')
-        .update({ content_embedding: embedding })
-        .eq('id', template.id);
-        
-      if (updateError) {
-        console.error(`テンプレート ${template.id} の更新エラー:`, updateError);
-      } else {
-        console.log(`テンプレート ${template.id} のエンベディングを更新しました`);
-      }
-    } catch (error) {
-      console.error(`テンプレート ${template.id} のエンベディング生成に失敗:`, error);
+      const embedding = await generateEmbedding(textToEmbed); // or use @ai-sdk/google
+      await supabase.from(tableName)
+                    .update({ content_embedding: embedding })
+                    .eq('id', item.id);
+      console.log(`Updated ${tableName} item ${item.id}`);
+    } catch (err) {
+      console.error(`Failed for ${tableName} item ${item.id}:`, err);
     }
   }
 }
 
-// 実行
-generateProjectTemplateEmbeddings()
-  .then(() => console.log('エンベディング生成完了'))
-  .catch(err => console.error('エラー:', err));
+// 実行例
+Promise.all([
+  generateDataEmbeddings('project_templates'),
+  generateDataEmbeddings('system_categories')
+]).then(() => console.log('All embeddings generated.'))
+  .catch(err => console.error('Error generating embeddings:', err));
 ```
 
-### 5. システムカテゴリのエンベディング生成スクリプト
+### 6. PostgreSQL関数とインデックス
 
-```typescript
-// scripts/generate-category-embeddings.ts
-import { supabase, generateEmbedding } from '../src/lib/embedding';
-
-async function generateCategoryEmbeddings() {
-  // システムカテゴリの取得
-  const { data: categories, error } = await supabase
-    .from('system_categories')
-    .select('*');
-    
-  if (error) {
-    console.error('カテゴリ取得エラー:', error);
-    return;
-  }
-  
-  console.log(`${categories.length}件のカテゴリのエンベディングを生成します`);
-  
-  for (const category of categories) {
-    // エンベディング用のテキストを生成
-    const textToEmbed = `
-      名前: ${category.name}
-      説明: ${category.description}
-      キーワード: ${JSON.stringify(category.keywords)}
-    `;
-    
-    try {
-      // エンベディングの生成
-      const embedding = await generateEmbedding(textToEmbed);
-      
-      // エンベディングをデータベースに保存
-      const { error: updateError } = await supabase
-        .from('system_categories')
-        .update({ content_embedding: embedding })
-        .eq('id', category.id);
-        
-      if (updateError) {
-        console.error(`カテゴリ ${category.id} の更新エラー:`, updateError);
-      } else {
-        console.log(`カテゴリ ${category.id} のエンベディングを更新しました`);
-      }
-    } catch (error) {
-      console.error(`カテゴリ ${category.id} のエンベディング生成に失敗:`, error);
-    }
-  }
-}
-
-// 実行
-generateCategoryEmbeddings()
-  .then(() => console.log('エンベディング生成完了'))
-  .catch(err => console.error('エラー:', err));
-```
-
-### 6. PostgreSQL関数の作成(類似プロジェクト検索用)
-
-Supabaseの管理コンソールから以下のSQLを実行して、ベクトル類似性検索のための関数を作成します。768次元ベクトルと`ivfflat`インデックスの使用を前提としています。
+ベクトル検索を効率的に行うために、Supabase上で `pgvector` 拡張を使用し、適切な関数とインデックスを作成します。
 
 ```sql
--- 要件に基づいて類似プロジェクトを検索する関数 (768次元)
-CREATE OR REPLACE FUNCTION match_projects(
-  query_embedding vector(768), -- 次元数を768に変更
-  match_threshold float,
-  match_count int,
-  category_filter text DEFAULT NULL
-)
-RETURNS TABLE (
-  id uuid,
-  name text,
-  category text,
-  description text,
-  features jsonb,
-  actual_hours int,
-  actual_cost int,
-  similarity float
-)
-LANGUAGE plpgsql
-AS $$
-BEGIN
-  RETURN QUERY
-  SELECT
-    pt.id,
-    pt.name,
-    pt.category,
-    pt.description,
-    pt.features,
-    pt.actual_hours,
-    pt.actual_cost,
-    1 - (pt.content_embedding <=> query_embedding) as similarity
-  FROM project_templates pt
-  WHERE
-    pt.content_embedding IS NOT NULL -- エンベディングが存在するもののみ対象
-    AND (category_filter IS NULL OR pt.category = category_filter)
-    AND 1 - (pt.content_embedding <=> query_embedding) > match_threshold
-  ORDER BY pt.content_embedding <=> query_embedding
-  LIMIT match_count;
-END;
-$$;
-```
+-- pgvector 拡張機能の有効化 (初回のみ)
+CREATE EXTENSION IF NOT EXISTS vector;
 
-同様に、システムカテゴリを検索するための関数も作成します。
+-- 類似プロジェクト検索関数 (768次元)
+CREATE OR REPLACE FUNCTION match_projects( /* ... 定義は変更なし ... */ );
 
-```sql
--- 要件に基づいてシステムカテゴリを検索する関数 (768次元)
-CREATE OR REPLACE FUNCTION match_categories(
-  query_embedding vector(768), -- 次元数を768に変更
-  match_threshold float,
-  match_count int
-)
-RETURNS TABLE (
-  id uuid,
-  name text,
-  description text,
-  keywords jsonb,
-  default_questions jsonb,
-  similarity float
-)
-LANGUAGE plpgsql
-AS $$
-BEGIN
-  RETURN QUERY
-  SELECT
-    sc.id,
-    sc.name,
-    sc.description,
-    sc.keywords,
-    sc.default_questions,
-    1 - (sc.content_embedding <=> query_embedding) as similarity
-  FROM system_categories sc
-  WHERE 
-    sc.content_embedding IS NOT NULL -- エンベディングが存在するもののみ対象
-    AND 1 - (sc.content_embedding <=> query_embedding) > match_threshold
-  ORDER BY sc.content_embedding <=> query_embedding
-  LIMIT match_count;
-END;
-$$;
-```
+-- 類似カテゴリ検索関数 (768次元)
+CREATE OR REPLACE FUNCTION match_categories( /* ... 定義は変更なし ... */ );
 
-また、これらの関数で利用する`ivfflat`インデックスを作成しておく必要があります。
-
-```sql
--- project_templates テーブル用 ivfflat インデックス (768次元)
+-- ivfflat インデックス作成 (768次元, cosine類似度)
+-- (テーブル名とカラム名は実際のスキーマに合わせる)
 CREATE INDEX IF NOT EXISTS project_templates_embedding_ivfflat_idx 
 ON public.project_templates 
-USING ivfflat (content_embedding vector_cosine_ops); 
--- WITH (lists = 100); -- 必要に応じてリスト数を調整
+USING ivfflat (content_embedding vector_cosine_ops);
 
--- system_categories テーブル用 ivfflat インデックス (768次元)
 CREATE INDEX IF NOT EXISTS system_categories_embedding_ivfflat_idx 
 ON public.system_categories 
 USING ivfflat (content_embedding vector_cosine_ops);
--- WITH (lists = 100); -- 必要に応じてリスト数を調整
 ```
+**(注意)** `ivfflat` インデックスは近似最近傍探索であり、100%の精度を保証するものではありません。データ量や検索要件によっては `hnsw` インデックスの方が適している場合もあります。
 
-### 7. Mastra実装での使用例
+### 7. Mastra実装での使用例 (カスタムツール)
 
-これらのエンベディング機能を活用して、要件分析ツールを実装します。
+現在の実装では、Mastra Agent に渡すカスタムツール内でベクトル検索を実行しています。Supabase RPC を直接呼び出す代わりに、`Mastra` インスタンスに登録された `PgVector` ストアを利用します。
 
 ```typescript
-// src/mastra/tools/findSimilarProjectsTool.ts
-import { createTool } from "@mastra/core/tools";
-import { z } from "zod";
-import { supabase, generateEmbedding } from "../../lib/embedding";
+// src/lib/rag/index.ts (customPgVectorSearchTool の execute 部分抜粋)
+import { mastra } from "../../mastra";
+import type { PgVector } from "@mastra/pg";
+// ... QueryResult インターフェース、エンベディング生成処理 ...
 
-export const findSimilarProjectsTool = createTool({
-  id: "find-similar-projects",
-  description: "要件に類似した過去のプロジェクトを検索します",
-  inputSchema: z.object({
-    requirements: z.string().describe("ユーザーの要件"),
-    answers: z.record(z.string()).describe("質問への回答"),
-    categoryId: z.string().optional().describe("システムカテゴリID"),
-  }),
-  outputSchema: z.object({
-    similarProjects: z.array(z.object({
-      id: z.string(),
-      name: z.string(),
-      similarity: z.number(),
-      features: z.array(z.any()),
-      actualHours: z.number(),
-      actualCost: z.number(),
-    })),
-  }),
-  execute: async ({ context }) => {
-    const { requirements, answers, categoryId } = context;
-    
-    // 検索用テキストの作成
-    const searchText = `
-      要件: ${requirements}
-      回答: ${JSON.stringify(answers)}
-    `;
-    
-    // エンベディングの生成
-    const embedding = await generateEmbedding(searchText);
-    
-    // 類似プロジェクトの検索
-    const { data: projects, error } = await supabase
-      .rpc('match_projects', {
-        query_embedding: embedding,
-        match_threshold: 0.7,
-        match_count: 5,
-        category_filter: categoryId || null
-      });
-    
-    if (error) {
-      console.error('類似プロジェクト検索エラー:', error);
-      throw error;
+async function executeSearch(params: VectorSearchParams): Promise<{ relevantContext: string } | { error: string }> {
+  const { queryText, topK, filter, indexName } = params;
+  try {
+    // Mastra から PgVector ストアを取得
+    const store: PgVector | undefined = mastra.getVector('pgVector');
+    if (!store || typeof store.query !== 'function') {
+      throw new Error("MastraからpgVectorストアを取得できませんでした。");
     }
     
-    return {
-      similarProjects: projects.map(project => ({
-        id: project.id,
-        name: project.name,
-        similarity: project.similarity,
-        features: project.features,
-        actualHours: project.actual_hours,
-        actualCost: project.actual_cost,
-      })),
-    };
-  },
-});
-```
+    // クエリのエンベディング生成
+    const queryVector = await getEmbeddingForQuery(queryText); // 上記の @ai-sdk/google を使う関数
+    
+    // PgVector ストアの query メソッドで検索実行
+    const results: QueryResult[] = await store.query({
+      indexName,
+      queryVector,
+      topK,
+      filter,
+    });
+    
+    // 結果を整形
+    const relevantContext = results.length > 0
+      ? results.map((r: QueryResult) => r.metadata?.text || "").filter(Boolean).join("\n\n")
+      : "関連情報が見つかりませんでした。";
+      
+    return { relevantContext };
 
-同様に、システムカテゴリを特定するツールも実装します。
+  } catch (error) {
+    console.error("Vector search execution error:", error);
+    return { error: /* ... エラーメッセージ ... */ };
+  }
+}
+```
+**(注意)** 上記の `store.query()` は `@mastra/pg` ライブラリの機能であり、内部的にはSQLを生成して実行します。インデックスが適切に作成されていれば、pgvectorがそれを利用して高速な検索を行います。
+
+## Mastraでのベクトル検索設定 (推奨方法)
+
+現在のプロジェクトでは、`@mastra/pg` の `PgVector` インスタンスを作成し、それを `Mastra` クラスのコンストラクタの `vectors` オプションに登録する方法を採用しています。これにより、フレームワーク全体でベクトルストアを管理し、ツールなどから参照しやすくなります。
 
 ```typescript
-// src/mastra/tools/analyzeCategoryTool.ts
-import { createTool } from "@mastra/core/tools";
-import { z } from "zod";
-import { supabase, generateEmbedding } from "../../lib/embedding";
+// src/mastra/index.ts (関連部分抜粋)
+import { Mastra } from "@mastra/core";
+import { PgVector } from "@mastra/pg";
+// ... 他の初期化 ...
 
-export const analyzeCategoryTool = createTool({
-  id: "analyze-category",
-  description: "要件に基づいて最適なシステムカテゴリを特定します",
-  inputSchema: z.object({
-    requirements: z.string().describe("ユーザーから提供された要件"),
-  }),
-  outputSchema: z.object({
-    categoryId: z.string(),
-    categoryName: z.string(),
-    confidence: z.number().min(0).max(1),
-    description: z.string(),
-  }),
-  execute: async ({ context }) => {
-    const { requirements } = context;
-    
-    // 要件のエンベディングを生成
-    const embedding = await generateEmbedding(requirements);
-    
-    // 類似度の高いカテゴリを検索
-    const { data: categories, error } = await supabase
-      .rpc('match_categories', {
-        query_embedding: embedding,
-        match_threshold: 0.5,
-        match_count: 3
-      });
-    
-    if (error) {
-      console.error('カテゴリ検索エラー:', error);
-      throw error;
-    }
-    
-    if (!categories || categories.length === 0) {
-      throw new Error('適合するカテゴリが見つかりませんでした');
-    }
-    
-    // 最も類似度の高いカテゴリを選択
-    const bestMatch = categories[0];
-    
-    return {
-      categoryId: bestMatch.id,
-      categoryName: bestMatch.name,
-      confidence: bestMatch.similarity,
-      description: bestMatch.description,
-    };
-  },
-});
-```
+const pgVectorStore = new PgVector(env.POSTGRES_CONNECTION_STRING);
 
-## Mastraでのベクトル検索設定
-
-Mastraフレームワークにベクトル検索機能を組み込む場合、SupabaseのRPC呼び出しを通じて上記で作成した関数を利用するのが一般的です。PgVectorライブラリを直接利用する代わりに、RPC経由で検索を実行します。以下はRPC呼び出しを利用するツールの例です（上記Step 7のコード例を参照）。
-
-もし `@mastra/pg` の `PgVector` を直接利用する場合、以下のように設定します。
-
-```typescript
-// src/mastra/index.ts (PgVector を直接利用する場合の例)
-import { Mastra } from '@mastra/core/mastra';
-import { PgVector } from '@mastra/pg';
-import { estimateAgent } from './agents/estimateAgent';
-import { estimateWorkflow } from './workflows/estimateWorkflow';
-
-// PgVector設定
-const pgVector = new PgVector({
-  connectionString: process.env.SUPABASE_CONNECTION_STRING, // DB接続文字列
-});
-
-// Mastraインスタンスの作成時にベクターストアとして登録
 export const mastra = new Mastra({
-  agents: { estimateAgent },
-  workflows: { estimateWorkflow },
   vectors: {
-    projectTemplates: pgVector.createVectorStore({
-      tableName: 'project_templates',
-      embeddingColumnName: 'content_embedding',
-      dimension: 768, // 次元数を768に変更
-      indexType: 'ivfflat', // インデックスタイプをivfflatに
-      metric: 'cosine',
-    }),
-    systemCategories: pgVector.createVectorStore({
-      tableName: 'system_categories',
-      embeddingColumnName: 'content_embedding',
-      dimension: 768,
-      indexType: 'ivfflat',
-      metric: 'cosine',
-    }),
-    // 他のベクターストア...
+    pgVector: pgVectorStore, // キー 'pgVector' で登録
   },
+  agents: { /* ... エージェント登録 ... */ },
+  logger: { /* ... ロガー設定 ... */ },
 });
-
-// 注意: @mastra/pg を直接利用する場合、インデックス作成は別途SQLで行うか、
-// ライブラリの機能で行う必要があります。上記は設定例です。
 ```
-
-## ユーティリティ関数: テキスト検索
+ツール実装からは、以下のようにして登録済みの `PgVector` インスタンスを取得できます。
 
 ```typescript
-// src/lib/searchUtils.ts
-import { supabase, generateEmbedding } from './embedding';
+// カスタムツール内
+import { mastra } from "../../mastra";
 
-/**
- * テキスト検索を行い、類似度の高いプロジェクトを返す
- */
-export async function searchSimilarProjects(
-  searchText: string,
-  options: {
-    threshold?: number;
-    limit?: number;
-    categoryId?: string;
-  } = {}
-) {
-  const {
-    threshold = 0.7,
-    limit = 5,
-    categoryId
-  } = options;
-  
-  // テキストからエンベディングを生成
-  const embedding = await generateEmbedding(searchText);
-  
-  // 類似度検索を実行
-  const { data, error } = await supabase
-    .rpc('match_projects', {
-      query_embedding: embedding,
-      match_threshold: threshold,
-      match_count: limit,
-      category_filter: categoryId || null
-    });
-    
-  if (error) {
-    console.error('検索エラー:', error);
-    throw error;
-  }
-  
-  return data;
-}
-
-/**
- * テキストに最適なシステムカテゴリを検索
- */
-export async function findBestCategory(
-  searchText: string,
-  options: {
-    threshold?: number;
-    limit?: number;
-  } = {}
-) {
-  const {
-    threshold = 0.5,
-    limit = 3
-  } = options;
-  
-  // テキストからエンベディングを生成
-  const embedding = await generateEmbedding(searchText);
-  
-  // カテゴリ検索を実行
-  const { data, error } = await supabase
-    .rpc('match_categories', {
-      query_embedding: embedding,
-      match_threshold: threshold,
-      match_count: limit
-    });
-    
-  if (error) {
-    console.error('カテゴリ検索エラー:', error);
-    throw error;
-  }
-  
-  return data;
+// ...
+const store = mastra.getVector('pgVector'); // 'pgVector' は登録時のキー
+if (store) {
+  // store.query(...) などで検索を実行
 }
 ```
+以前のドキュメントにあった Supabase RPC を直接呼び出す方法や、`pgVector.createVectorStore()` を使う方法は、現在の実装では採用していません。
 
 ## まとめ
 
-Gemini APIの`text-embedding-004`モデルとSupabase/pgvectorを組み合わせることで、テキストベースの自然言語要件から類似プロジェクトやシステムカテゴリを特定する機能を実装しました。主なポイントは：
+Gemini APIの`text-embedding-004`モデルとSupabase/pgvector、そして Mastra フレームワークを組み合わせることで、RAG 機能を実現しました。主なポイントは：
 
-1.  Gemini APIの`text-embedding-004`モデル (768次元) を使用
-2.  PostgreSQLのpgvector拡張を活用し、`ivfflat`インデックスを用いた類似度検索
-3.  システムカテゴリ自動特定とプロジェクト類似性検索の実装
-4.  Mastraフレームワークとの統合（主にSupabase RPC経由での関数呼び出しを推奨）
+1.  `@ai-sdk/google` を使用したエンベディング生成 (`text-embedding-004`)
+2.  PostgreSQLのpgvector拡張と`ivfflat`インデックスによるベクトル格納・検索基盤
+3.  **`Mastra` クラスへの `PgVector` インスタンス登録と、カスタムツール内での `mastra.getVector().query()` による検索実行**
+4.  (参考) 事前データへのエンベディング生成バッチ処理
 
-これにより、ユーザーが自然言語で入力した要件に基づいて、適切なカテゴリの特定や過去の類似案件からの参照が可能になり、見積もりの精度と効率が向上します。 
+これにより、エージェントが外部ドキュメントの情報を参照しながら、より文脈に即した回答を生成できるようになりました。 
