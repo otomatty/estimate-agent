@@ -1,0 +1,17 @@
+{
+	"mcpServers": {
+		"mastra": {
+			"command": "npx",
+			"args": ["-y", "@mastra/mcp-docs-server@latest"]
+		},
+		"supabase": {
+			"command": "npx",
+			"args": [
+				"-y",
+				"@supabase/mcp-server-supabase@latest",
+				"--access-token",
+				"sbp_8cec93e136e2e203b19e91b0170948775ef42706"
+			]
+		}
+	}
+}

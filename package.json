@@ -1,0 +1,51 @@
+{
+	"name": "estimate-agent",
+	"version": "1.0.0",
+	"main": "index.js",
+	"scripts": {
+		"test": "echo \"Error: no test specified\" && exit 1",
+		"dev": "mastra dev",
+		"dev:api": "tsx --watch src/api/index.ts",
+		"start:api": "tsx src/api/index.ts",
+		"build": "tsc",
+		"start": "node dist/api/index.js"
+	},
+	"keywords": [],
+	"author": "",
+	"license": "ISC",
+	"description": "",
+	"type": "module",
+	"dependencies": {
+		"@ai-sdk/google": "^1.2.8",
+		"@mastra/core": "^0.7.0",
+		"@mastra/pg": "^0.2.6",
+		"@mastra/rag": "^0.1.14",
+		"@supabase/supabase-js": "^2.49.4",
+		"@types/cors": "^2.8.17",
+		"@types/express": "^5.0.1",
+		"@types/uuid": "^10.0.0",
+		"autoprefixer": "^10.4.21",
+		"compression": "^1.8.0",
+		"cors": "^2.8.5",
+		"dotenv": "^16.4.7",
+		"express": "^4.21.2",
+		"express-rate-limit": "^7.5.0",
+		"helmet": "^8.1.0",
+		"mastra": "^0.4.4",
+		"morgan": "^1.10.0",
+		"next": "^15.2.4",
+		"postcss": "^8.5.3",
+		"react": "^19.1.0",
+		"react-dom": "^19.1.0",
+		"tailwindcss": "^4.1.3",
+		"uuid": "^11.1.0",
+		"zod": "^3.24.2"
+	},
+	"devDependencies": {
+		"@types/compression": "^1.7.5",
+		"@types/morgan": "^1.9.9",
+		"@types/node": "^22.14.0",
+		"tsx": "^4.19.3",
+		"typescript": "^5.8.3"
+	}
+}

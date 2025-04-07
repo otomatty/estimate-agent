@@ -1,0 +1,432 @@
+openapi: 3.0.0
+info:
+  title: 業務システム自動見積もりAPI
+  description: AIを活用した業務システム開発の自動見積もりを提供するAPIです。
+  version: 1.0.0
+  contact:
+    name: サポートチーム
+    email: support@example.com
+
+servers:
+  - url: https://api.estimate-system.example.com/v1
+    description: 本番環境
+  - url: https://staging-api.estimate-system.example.com/v1
+    description: ステージング環境
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-KEY
+  
+  schemas:
+    Error:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+    
+    InitialRequirements:
+      type: object
+      required:
+        - requirements
+      properties:
+        requirements:
+          type: string
+          description: システム要件の初期記述
+        clientName:
+          type: string
+          description: クライアント名
+        projectName:
+          type: string
+          description: プロジェクト名
+    
+    Question:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        question:
+          type: string
+        importance:
+          type: integer
+          minimum: 1
+          maximum: 5
+        category:
+          type: string
+        position:
+          type: integer
+    
+    Answer:
+      type: object
+      properties:
+        questionId:
+          type: string
+          format: uuid
+        answer:
+          type: string
+    
+    EstimateItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        unitPrice:
+          type: integer
+        quantity:
+          type: integer
+          default: 1
+        isRequired:
+          type: boolean
+          default: true
+        complexity:
+          type: string
+          enum: [low, medium, high]
+        estimatedHours:
+          type: integer
+        isSelected:
+          type: boolean
+          default: true
+    
+    Estimate:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        description:
+          type: string
+        totalAmount:
+          type: integer
+        status:
+          type: string
+          enum: [draft, requirements, questions, features, review, completed]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/EstimateItem'
+    
+    BusinessAnalysis:
+      type: object
+      properties:
+        estimateId:
+          type: string
+          format: uuid
+        roi:
+          type: object
+          properties:
+            yearlyROI:
+              type: array
+              items:
+                type: object
+                properties:
+                  year:
+                    type: integer
+                  roi:
+                    type: number
+            paybackPeriodMonths:
+              type: integer
+        costOptimization:
+          type: object
+          properties:
+            optimizationRate:
+              type: number
+            suggestions:
+              type: array
+              items:
+                type: string
+        efficiencyMetrics:
+          type: object
+          properties:
+            timeSavingHours:
+              type: integer
+            productivityIncrease:
+              type: number
+
+paths:
+  /estimates:
+    post:
+      summary: 新規見積もりを作成
+      description: 初期要件を基に新規見積もりを作成します
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InitialRequirements'
+      responses:
+        '201':
+          description: 見積もり作成成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  estimateId:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+        '400':
+          description: 不正なリクエスト
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: 認証エラー
+    
+    get:
+      summary: 見積もり一覧を取得
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: 見積もり一覧
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  estimates:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Estimate'
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  pages:
+                    type: integer
+  
+  /estimates/{estimateId}:
+    get:
+      summary: 見積もり詳細を取得
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: estimateId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 見積もり詳細
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Estimate'
+        '404':
+          description: 見積もりが見つかりません
+    
+    delete:
+      summary: 見積もりを削除
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: estimateId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: 見積もり削除成功
+        '404':
+          description: 見積もりが見つかりません
+  
+  /estimates/{estimateId}/questions:
+    get:
+      summary: 見積もりの質問一覧を取得
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: estimateId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 質問一覧
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  questions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Question'
+    
+    post:
+      summary: 質問への回答を登録
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: estimateId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                answers:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Answer'
+      responses:
+        '200':
+          description: 回答登録成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nextStage:
+                    type: string
+                  isComplete:
+                    type: boolean
+  
+  /estimates/{estimateId}/features:
+    get:
+      summary: 見積もりの機能一覧を取得
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: estimateId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 機能一覧
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EstimateItem'
+    
+    put:
+      summary: 機能の選択状態を更新
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: estimateId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      isSelected:
+                        type: boolean
+      responses:
+        '200':
+          description: 機能更新成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  totalAmount:
+                    type: integer
+  
+  /estimates/{estimateId}/pdf:
+    get:
+      summary: 見積書PDFを生成
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: estimateId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: PDF生成成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pdfUrl:
+                    type: string
+                    format: url
+  
+  /estimates/{estimateId}/business-analysis:
+    get:
+      summary: ビジネス分析データを取得
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: estimateId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ビジネス分析データ
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BusinessAnalysis'
